@@ -1,0 +1,29 @@
+--建表
+CREATE TABLE orders("订单ID" VARCHAR(50),"订单时间" TIMESTAMP,"订单金额" NUMERIC(10,2),"产品ID" VARCHAR(50),"产品名称" VARCHAR(200),"产品类别" VARCHAR(100),"用户ID" VARCHAR(50),"用户名" VARCHAR(100),"用户年龄" INT,"用户vip等级" INT,"用户性别" VARCHAR(10),"用户所在区域" VARCHAR(50),"支付方式" VARCHAR(50));
+--导入数据
+\copy orders FROM 'D:/TEMP/archive/test_orders_info.csv' WITH(FORMAT csv,DELIMITER ',',HEADER,ENCODING 'UTF8');
+--建表，月份，年龄分组
+CREATE TABLE orders_enriched AS SELECT *,EXTRACT(MONTH FROM "订单时间") AS 月份,CASE WHEN "用户年龄"<18 THEN '<18' WHEN "用户年龄"<=30 THEN '18-30' WHEN "用户年龄"<=40 THEN '31-40' WHEN "用户年龄"<=50 THEN '41-50' WHEN "用户年龄"<=60 THEN '51-60' ELSE '60+' END AS 年龄分组 FROM orders;
+--整体指标
+SELECT SUM("订单金额") AS 总销售额,ROUND(AVG("订单金额"),2) AS 每订单平均金额,COUNT(*) AS 总订单数 FROM orders_enriched;
+--月度趋势表
+WITH monthly_stats AS(SELECT 月份,SUM("订单金额")AS 月总销售额,SUM(SUM("订单金额"))OVER()AS 全年总销售额 FROM orders_enriched GROUP BY 月份),
+monthly_category AS(SELECT 月份,"产品类别",SUM("订单金额")AS 类别销售额,ROW_NUMBER()OVER(PARTITION BY 月份 ORDER BY SUM("订单金额")DESC)AS rn FROM orders_enriched GROUP BY 月份,"产品类别"),
+monthly_product AS(SELECT 月份,"产品名称",SUM("订单金额")AS 产品销售额,ROW_NUMBER()OVER(PARTITION BY 月份 ORDER BY SUM("订单金额")DESC)AS rn FROM orders_enriched GROUP BY 月份,"产品名称")
+SELECT ms.月份,ms.月总销售额,ROUND(100.0*ms.月总销售额/ms.全年总销售额,2)AS 占总销售额比例,STRING_AGG(CASE WHEN mc.rn<=3 THEN mc."产品类别"END,', 'ORDER BY mc.rn)AS 销售前三类别,MAX(CASE WHEN mp.rn=1 THEN mp."产品名称"END)AS 当月最高销售额产品
+FROM monthly_stats ms
+LEFT JOIN monthly_category mc ON ms.月份=mc.月份 AND mc.rn<=3
+LEFT JOIN monthly_product mp ON ms.月份=mp.月份 AND mp.rn=1
+GROUP BY ms.月份,ms.月总销售额,ms.全年总销售额 ORDER BY ms.月份;
+--支付方式交叉
+--支付方式加性别
+SELECT "支付方式","用户性别",COUNT(*)AS 订单数,ROUND(100.0*COUNT(*)/SUM(COUNT(*))OVER(PARTITION BY "支付方式"),2)AS 占比 FROM orders_enriched GROUP BY "支付方式","用户性别" ORDER BY "支付方式",占比 DESC;
+--支付方式加产品类别
+WITH payment_category_rank AS(SELECT "支付方式","产品类别",SUM("订单金额")AS 销售额,ROW_NUMBER()OVER(PARTITION BY "支付方式"ORDER BY SUM("订单金额")DESC)AS rn FROM orders_enriched GROUP BY "支付方式","产品类别")SELECT "支付方式","产品类别",ROUND(销售额,2)AS 销售额 FROM payment_category_rank WHERE rn<=3 ORDER BY "支付方式",rn;
+--支付方式加区域
+WITH payment_region AS(SELECT "支付方式","用户所在区域",COUNT(*)AS 订单数,ROW_NUMBER()OVER(PARTITION BY "支付方式"ORDER BY COUNT(*)DESC)AS rn FROM orders_enriched GROUP BY "支付方式","用户所在区域")SELECT "支付方式","用户所在区域",订单数,ROUND(100.0*订单数/SUM(订单数)OVER(PARTITION BY "支付方式"),2)AS 占比 FROM payment_region WHERE rn<=5 ORDER BY "支付方式",占比 DESC;
+--年龄加性别分组
+--总销售额
+SELECT 年龄分组,"用户性别",ROUND(SUM("订单金额"),2)AS 总销售额 FROM orders_enriched GROUP BY 年龄分组,"用户性别" ORDER BY 年龄分组,"用户性别";
+--产品类别
+WITH age_gender_category AS(SELECT 年龄分组,"用户性别","产品类别",SUM("订单金额")AS 销售额,ROW_NUMBER()OVER(PARTITION BY 年龄分组,"用户性别"ORDER BY SUM("订单金额")DESC)AS rn FROM orders_enriched GROUP BY 年龄分组,"用户性别","产品类别")SELECT 年龄分组,"用户性别","产品类别",ROUND(销售额,2)AS 销售额 FROM age_gender_category WHERE rn<=3 ORDER BY 年龄分组,"用户性别",rn;
